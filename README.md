@@ -5,10 +5,12 @@ GoshenTrack is a static web app hosted from `docs/` and backed by Supabase.
 ## Deploy with GitHub Pages
 
 1. Push this repository to GitHub.
-2. Open the repository's **Settings → Pages**.
-3. Under **Build and deployment**, choose **Deploy from a branch**.
-4. Select the branch you pushed and the `/docs` folder, then save.
-5. Wait for GitHub Pages to publish the site. Its URL will look like
+2. Open the repository's **Settings → Pages** and set the source to **GitHub
+   Actions**.
+3. The workflow in `.github/workflows/main.yml` deploys the `docs/` folder
+   automatically whenever changes are pushed to `main`. You can also start it
+   manually from the repository's **Actions** tab.
+4. Wait for GitHub Pages to publish the site. Its URL will look like
    `https://<github-username>.github.io/<repository-name>/`.
 
 ## Configure Supabase

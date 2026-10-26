@@ -202,7 +202,7 @@ grant usage, select on sequence public.products_product_id_seq to authenticated;
 drop policy if exists "Users can read their own profile" on public.profiles;
 create policy "Users can read their own profile"
     on public.profiles for select to authenticated
-    using (auth.uid() = id or public.current_app_role() = 'admin');
+    using (public.current_app_role() = 'admin' or (archived_at is null and auth.uid() = id));
 
 drop policy if exists "Admins can manage account roles" on public.profiles;
 create policy "Admins can manage account roles"
@@ -229,12 +229,17 @@ create policy "Admins can remove products"
 drop policy if exists "Staff and admins can read inventory transactions" on public.inventory_transactions;
 create policy "Staff and admins can read inventory transactions"
     on public.inventory_transactions for select to authenticated
-    using (public.current_app_role() in ('staff', 'admin'));
+    using (public.current_app_role() = 'admin'
+        or (archived_at is null and public.current_app_role() = 'staff'));
 
 drop policy if exists "Customers can read their orders" on public.customer_orders;
 create policy "Customers can read their orders"
     on public.customer_orders for select to authenticated
-    using (customer_id = auth.uid() or public.current_app_role() in ('staff', 'admin'));
+    using (public.current_app_role() = 'admin'
+        or (archived_at is null and (
+            customer_id = auth.uid()
+            or public.current_app_role() = 'staff'
+        )));
 drop policy if exists "Customers can place their own orders" on public.customer_orders;
 create policy "Customers can place their own orders"
     on public.customer_orders for insert to authenticated
@@ -248,7 +253,8 @@ create policy "Customers can place their own orders"
 drop policy if exists "Staff and admins can read sales" on public.sales;
 create policy "Staff and admins can read sales"
     on public.sales for select to authenticated
-    using (public.current_app_role() in ('staff', 'admin'));
+    using (public.current_app_role() = 'admin'
+        or (archived_at is null and public.current_app_role() = 'staff'));
 
 create or replace function public.place_customer_order(
     p_product_id bigint,

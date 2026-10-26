@@ -16,6 +16,7 @@
         orders: [],
         accounts: [],
         archive: [],
+        archiveReady: false,
         tab: location.hash.replace(/^#/, "").split("?")[0] || "dashboard",
         message: null,
         busy: false,
@@ -32,6 +33,7 @@
         return item ? `${escapeHtml(item.product_name)} (${escapeHtml(item.size)})` : "Unavailable product";
     };
     const displayName = () => state.profile?.full_name || state.profile?.email || "User";
+    const isArchived = (type, id) => state.archive.some(item => item.record_type === type && String(item.record_id) === String(id));
     const status = value => `<span class="badge badge-${escapeHtml(String(value).toLowerCase().replaceAll(" ", "-"))}">${escapeHtml(value)}</span>`;
     const card = (title, body, extra = "") => `<section class="card ${extra}"><h2>${title}</h2>${body}</section>`;
     const field = (label, input) => `<label class="field">${label}${input}</label>`;
@@ -57,6 +59,12 @@
         if (/email not confirmed/i.test(text)) return "Confirm your email before signing in.";
         if (/already registered/i.test(text)) return "An account already exists for that email.";
         return text;
+    }
+
+    function isArchiveSetupMissing(error) {
+        const text = error?.message || "";
+        return error?.code === "PGRST202" && /admin_list_archive/i.test(text)
+            || /could not find the function public\.admin_list_archive/i.test(text);
     }
 
     function renderAuth(mode = "login", notice = "") {
@@ -88,7 +96,8 @@
         }
         const items = [["dashboard", "Dashboard"], ["inventory", "Stock-in / out"], ["sale", "Record sale"], ["orders", "Customer orders"]];
         if (state.profile.role === "admin") {
-            items.push(["reports", "Reports"], ["records", "Edit records"], ["accounts", "Accounts"], ["products", "Products"], ["archive", "Archive"]);
+            items.push(["reports", "Reports"], ["records", "Edit records"], ["accounts", "Accounts"], ["products", "Products"]);
+            if (state.archiveReady) items.push(["archive", "Archive"]);
         }
         return items;
     }
@@ -120,7 +129,7 @@
                 <header class="topbar">
                     <div><p class="eyebrow">GOSHENTRACK <span aria-hidden="true">/</span> WORKSPACE</p><h1>${escapeHtml(pageTitle)}</h1></div>
                     <div class="topbar-actions">
-                        ${state.profile.role === "admin" && state.tab !== "archive" ? '<button type="button" class="archive-shortcut" data-tab="archive"><span aria-hidden="true">▣</span> Archive</button>' : ""}
+                        ${state.profile.role === "admin" && state.archiveReady && state.tab !== "archive" ? '<button type="button" class="archive-shortcut" data-tab="archive"><span aria-hidden="true">▣</span> Archive</button>' : ""}
                         <span class="topbar-user"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span>${escapeHtml(displayName())}</span></span>
                     </div>
                 </header>
@@ -147,7 +156,7 @@
             <button class="primary" type="submit" ${state.busy || !activeProducts.length ? "disabled" : ""}>Place order</button>
             <p class="footer-note">Orders stay Pending until staff reviews them. Order history is private to your account.</p>
         </form>`;
-        const recent = state.orders.filter(order => !order.archived_at).slice(0, 5).map(order => [
+        const recent = state.orders.filter(order => !isArchived("order", order.order_id)).slice(0, 5).map(order => [
             `#${Number(order.order_id)}`, productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
         ]);
@@ -157,7 +166,7 @@
     }
 
     function customerOrders() {
-        return card("My orders", table(["Order", "Product", "Quantity", "Status", "Placed", "Reviewed"], state.orders.filter(order => !order.archived_at).map(order => [
+        return card("My orders", table(["Order", "Product", "Quantity", "Status", "Placed", "Reviewed"], state.orders.filter(order => !isArchived("order", order.order_id)).map(order => [
             `#${Number(order.order_id)}`, productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
             order.reviewed_at ? escapeHtml(new Date(order.reviewed_at).toLocaleString()) : "—",
@@ -169,7 +178,7 @@
             new URLSearchParams(location.hash.split("?")[1] || "").get("period") : "7";
         const start = period === "all" ? "0000-01-01" : new Date(Date.now() - (Number(period) - 1) * 86400000).toISOString().slice(0, 10);
         const sales = state.sales.filter(item => item.sale_date >= start && item.sale_date <= today());
-        const pending = state.orders.filter(item => !item.archived_at && item.status === "Pending").length;
+        const pending = state.orders.filter(item => !isArchived("order", item.order_id) && item.status === "Pending").length;
         const lowStock = state.products.filter(item => item.active).map(item => {
             const stockCount = Number(state.stock[String(item.product_id)] || 0);
             return `<div class="stat${stockCount < 50 ? " low" : ""}">${productName(item.product_id)}<b>${stockCount}</b></div>`;
@@ -181,7 +190,7 @@
             <div class="stat${pending ? " low" : ""}">Pending orders<b>${pending}</b></div>
         </div>`;
         const periodSelect = `<label class="field">Period<select data-period>${[["1", "Today"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["all", "All time"]].map(([value, label]) => `<option value="${value}" ${period === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>`;
-        const orders = state.orders.filter(order => !order.archived_at).slice(0, 8).map(order => [
+        const orders = state.orders.filter(order => !isArchived("order", order.order_id)).slice(0, 8).map(order => [
             `#${Number(order.order_id)}`, escapeHtml(order.customer_name), productName(order.product_id),
             Number(order.quantity), status(order.status), order.status === "Pending" ? orderAction(order.order_id, "confirm") + orderAction(order.order_id, "decline") : "",
         ]);
@@ -196,7 +205,7 @@
     }
 
     function archiveAction(type, id, summary) {
-        if (state.profile.role !== "admin") return "";
+        if (state.profile.role !== "admin" || !state.archiveReady) return "";
         return `<form class="inline" data-action="archive-record">${hidden("kind", type)}${hidden("id", id)}${hidden("summary", summary)}<button type="submit" ${state.busy ? "disabled" : ""}>Archive</button></form>`;
     }
 
@@ -224,7 +233,7 @@
             ${field("Reason", '<input name="reason" maxlength="240" placeholder="e.g. stock received or damaged" required>')}
             ${field("Date", `<input type="date" name="transaction_date" value="${today()}" required>`)}
         </div><button class="primary" type="submit" ${state.busy ? "disabled" : ""}>Save transaction</button></form>`;
-        const activeTransactions = state.transactions.filter(item => !item.archived_at);
+        const activeTransactions = state.transactions.filter(item => !isArchived("inventory", item.transaction_id));
         const rows = activeTransactions.slice(0, 30).map(item => [
             escapeHtml(item.transaction_date), productName(item.product_id), escapeHtml(item.transaction_type),
             Number(item.quantity), escapeHtml(item.reason),
@@ -241,7 +250,7 @@
             ${field("Customer name", '<input name="customer_name" maxlength="120" required>')}
             ${field("Contact number", '<input name="contact_number" maxlength="40">')}
         </div><button class="primary" type="submit" ${state.busy || !products ? "disabled" : ""}>Save sale</button></form>`;
-        const rows = state.sales.filter(item => !item.archived_at).slice(0, 30).map(item => [
+        const rows = state.sales.filter(item => !isArchived("sale", item.sale_id)).slice(0, 30).map(item => [
             escapeHtml(item.sale_date), productName(item.product_id), Number(item.quantity),
             escapeHtml(item.customer_name), money(item.total_amount),
             ...(state.profile.role === "admin" ? [archiveAction("sale", item.sale_id, `${item.customer_name} · ${item.quantity} eggs · ${money(item.total_amount)}`)] : []),
@@ -250,7 +259,7 @@
     }
 
     function staffOrders() {
-        const rows = state.orders.filter(order => !order.archived_at).map(order => [
+        const rows = state.orders.filter(order => !isArchived("order", order.order_id)).map(order => [
             `#${Number(order.order_id)}`, `${escapeHtml(order.customer_name)} · ${escapeHtml(order.contact_number)}`,
             productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
@@ -288,11 +297,11 @@
     }
 
     function records() {
-        const transactions = state.transactions.filter(item => !item.archived_at).map(item => {
+        const transactions = state.transactions.filter(item => !isArchived("inventory", item.transaction_id)).map(item => {
             const form = `<form class="inline" data-action="edit-record">${hidden("kind", "inventory")}${hidden("id", item.transaction_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form>${archiveAction("inventory", item.transaction_id, `${item.transaction_type} · ${item.quantity} eggs · ${item.reason}`)}`;
             return [escapeHtml(item.transaction_date), productName(item.product_id), escapeHtml(item.transaction_type), Number(item.quantity), escapeHtml(item.reason), form];
         });
-        const sales = state.sales.filter(item => !item.archived_at).map(item => {
+        const sales = state.sales.filter(item => !isArchived("sale", item.sale_id)).map(item => {
             const controls = item.order_id
                 ? '<span class="muted">Order-linked</span>'
                 : `<form class="inline" data-action="edit-record">${hidden("kind", "sale")}${hidden("id", item.sale_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form>`;
@@ -304,7 +313,7 @@
     }
 
     function accounts() {
-        const rows = state.accounts.filter(account => !account.archived_at).map(account => {
+        const rows = state.accounts.filter(account => !isArchived("account", account.id)).map(account => {
             const roles = ["customer", "staff", "admin"].map(role => `<option value="${role}" ${account.role === role ? "selected" : ""}>${role[0].toUpperCase() + role.slice(1)}</option>`).join("");
             const statuses = ["Active", "Inactive"].map(value => `<option value="${value}" ${account.account_status === value ? "selected" : ""}>${value}</option>`).join("");
             const self = account.id === state.session.user.id;
@@ -369,13 +378,13 @@
 
         const [orders, transactions, sales, accounts] = await Promise.all([
             role === "customer"
-                ? fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at,archived_at", "order_date", false, [["customer_id", state.session.user.id]])
-                : fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at,archived_at", "order_date", false),
+                ? fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at", "order_date", false, [["customer_id", state.session.user.id]])
+                : fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at", "order_date", false),
             role === "customer" ? Promise.resolve([])
-                : fetchAll("inventory_transactions", "transaction_id,product_id,user_id,transaction_type,quantity,reason,transaction_date,archived_at", "transaction_id"),
+                : fetchAll("inventory_transactions", "transaction_id,product_id,user_id,transaction_type,quantity,reason,transaction_date", "transaction_id"),
             role === "customer" ? Promise.resolve([])
-                : fetchAll("sales", "sale_id,product_id,user_id,order_id,customer_name,customer_contact,quantity,unit_price,total_amount,sale_date,archived_at", "sale_id"),
-            role === "admin" ? fetchAll("profiles", "id,email,full_name,role,account_status,created_at,archived_at", "created_at", false)
+                : fetchAll("sales", "sale_id,product_id,user_id,order_id,customer_name,customer_contact,quantity,unit_price,total_amount,sale_date", "sale_id"),
+            role === "admin" ? fetchAll("profiles", "id,email,full_name,role,account_status,created_at", "created_at", false)
                 : Promise.resolve([]),
         ]);
         state.orders = orders;
@@ -384,10 +393,19 @@
         state.accounts = accounts;
         if (role === "admin") {
             const { data, error } = await state.client.rpc("admin_list_archive");
-            if (error) throw error;
-            state.archive = data || [];
+            if (error) {
+                if (!isArchiveSetupMissing(error)) throw error;
+                state.archive = [];
+                state.archiveReady = false;
+                state.message = { message: "Archive controls are unavailable until the latest supabase_setup.sql is run in the Supabase SQL Editor.", isError: false };
+            } else {
+                state.archive = data || [];
+                state.archiveReady = true;
+                state.message = null;
+            }
         } else {
             state.archive = [];
+            state.archiveReady = false;
         }
     }
 

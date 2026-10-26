@@ -212,7 +212,7 @@ th { background: var(--surface-soft); color: var(--muted); font-size: 13px; lett
     .page-content.dashboard > :first-child { grid-column: auto; }
 }
 
-@media (max-width: 680px) {
+@media (max-width: 1024px) {
     .app-layout { display: flex; width: 100%; min-height: 100vh; flex-direction: column; margin: 0; border: 0; border-radius: 0; }
     .sidebar { gap: 16px; padding: 14px 16px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
     .brand { margin: 0; }

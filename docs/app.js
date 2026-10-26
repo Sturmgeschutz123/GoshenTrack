@@ -300,6 +300,7 @@
     }
 
     function render() {
+        root.classList.remove("loading");
         if (!state.profile) {
             const mode = location.hash === "#register" ? "register" : "login";
             renderAuth(mode);

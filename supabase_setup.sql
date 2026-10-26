@@ -17,6 +17,8 @@ create table if not exists public.profiles (
 
 alter table public.profiles add column if not exists email text;
 alter table public.profiles add column if not exists account_status text not null default 'Active';
+alter table public.profiles add column if not exists archived_at timestamptz;
+alter table public.profiles add column if not exists archived_account_status text;
 do $$
 begin
     if not exists (
@@ -100,6 +102,19 @@ create table if not exists public.sales (
     sale_date date not null default current_date,
     created_at timestamptz not null default now()
 );
+
+alter table public.inventory_transactions add column if not exists archived_at timestamptz;
+alter table public.customer_orders add column if not exists archived_at timestamptz;
+alter table public.sales add column if not exists archived_at timestamptz;
+
+create index if not exists inventory_transactions_archived_at_idx
+    on public.inventory_transactions (archived_at) where archived_at is not null;
+create index if not exists customer_orders_archived_at_idx
+    on public.customer_orders (archived_at) where archived_at is not null;
+create index if not exists sales_archived_at_idx
+    on public.sales (archived_at) where archived_at is not null;
+create index if not exists profiles_archived_at_idx
+    on public.profiles (archived_at) where archived_at is not null;
 
 create or replace function public.current_app_role()
 returns text
@@ -382,7 +397,7 @@ begin
 
     select * into v_order
     from public.customer_orders
-    where order_id = p_order_id
+    where order_id = p_order_id and archived_at is null
     for update;
     if not found or v_order.status <> 'Pending' then
         raise exception 'This order is no longer pending';
@@ -438,13 +453,16 @@ begin
     if coalesce(public.current_app_role() <> 'admin', true) then
         raise exception 'Admin access is required';
     end if;
+    if p_delete then
+        raise exception 'Archive records first; permanent deletion is available only in the archive';
+    end if;
     if not p_delete and (p_new_quantity is null or p_new_quantity <= 0) then
         raise exception 'Quantity must be greater than zero';
     end if;
 
     if p_kind = 'inventory' then
         select product_id, quantity, transaction_type into v_product_id, v_old_quantity, v_type
-        from public.inventory_transactions where transaction_id = p_id for update;
+        from public.inventory_transactions where transaction_id = p_id and archived_at is null for update;
         if not found then raise exception 'Inventory transaction not found'; end if;
 
         perform 1 from public.products where product_id = v_product_id for update;
@@ -463,7 +481,7 @@ begin
         end if;
     elsif p_kind = 'sale' then
         select product_id, quantity, order_id into v_product_id, v_old_quantity, v_order_id
-        from public.sales where sale_id = p_id for update;
+        from public.sales where sale_id = p_id and archived_at is null for update;
         if not found then raise exception 'Sale record not found'; end if;
         if v_order_id is not null then raise exception 'Sales linked to customer orders cannot be edited here'; end if;
 
@@ -487,18 +505,257 @@ begin
 end;
 $$;
 
+create or replace function public.admin_list_archive()
+returns table (record_type text, record_id text, archived_at timestamptz, summary text)
+language plpgsql
+stable
+security definer
+set search_path = ''
+as $$
+begin
+    if coalesce(public.current_app_role() <> 'admin', true) then
+        raise exception 'Admin access is required';
+    end if;
+
+    return query
+    select 'inventory'::text, t.transaction_id::text, t.archived_at,
+           format('%s · %s · %s eggs · %s', t.transaction_date, p.product_name, t.quantity, t.reason)
+    from public.inventory_transactions t
+    join public.products p on p.product_id = t.product_id
+    where t.archived_at is not null
+    union all
+    select 'sale'::text, s.sale_id::text, s.archived_at,
+           format('%s · %s · %s · %s eggs · %s', s.sale_date, p.product_name, s.customer_name, s.quantity, s.total_amount)
+    from public.sales s
+    join public.products p on p.product_id = s.product_id
+    where s.archived_at is not null
+    union all
+    select 'order'::text, o.order_id::text, o.archived_at,
+           format('%s · %s · %s eggs · %s', o.customer_name, p.product_name, o.quantity, o.status)
+    from public.customer_orders o
+    join public.products p on p.product_id = o.product_id
+    where o.archived_at is not null
+    union all
+    select 'account'::text, p.id::text, p.archived_at,
+           format('%s · %s · %s', coalesce(nullif(p.full_name, ''), 'Unnamed account'), coalesce(p.email, ''), p.role)
+    from public.profiles p
+    where p.archived_at is not null
+    order by 3 desc;
+end;
+$$;
+
+create or replace function public.admin_manage_archived_record(
+    p_record_type text,
+    p_record_id text,
+    p_action text
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+    v_user_id uuid;
+    v_order_id bigint;
+    v_product_id bigint;
+    v_old_quantity integer;
+    v_transaction_type text;
+    v_current_stock bigint;
+    v_after_stock bigint;
+    v_rows integer;
+begin
+    if coalesce(public.current_app_role() <> 'admin', true) then
+        raise exception 'Admin access is required';
+    end if;
+    if p_action is null or p_action not in ('archive', 'restore', 'delete') then
+        raise exception 'Unsupported archive action';
+    end if;
+
+    if p_record_type = 'account' then
+        v_user_id := p_record_id::uuid;
+        if v_user_id = auth.uid() then
+            raise exception 'You cannot archive or delete your own account';
+        end if;
+
+        if p_action = 'archive' then
+            update public.profiles
+            set archived_at = now(),
+                archived_account_status = account_status,
+                account_status = 'Inactive'
+            where id = v_user_id and archived_at is null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Active account not found'; end if;
+            return;
+        elsif p_action = 'restore' then
+            update public.profiles
+            set archived_at = null,
+                account_status = coalesce(archived_account_status, 'Active'),
+                archived_account_status = null
+            where id = v_user_id and archived_at is not null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Archived account not found'; end if;
+            return;
+        end if;
+
+        perform 1 from public.profiles
+        where id = v_user_id and archived_at is not null
+        for update;
+        if not found then raise exception 'Archived account not found'; end if;
+
+        for v_product_id in
+            select product_id from public.inventory_transactions where user_id = v_user_id
+            union
+            select product_id from public.sales
+            where user_id = v_user_id
+               or order_id in (select order_id from public.customer_orders where customer_id = v_user_id)
+            order by product_id
+        loop
+            perform 1 from public.products where product_id = v_product_id for update;
+            select coalesce(sum(case when t.transaction_type = 'In' then t.quantity else -t.quantity end), 0)
+                   - coalesce((
+                       select sum(s.quantity) from public.sales s where s.product_id = v_product_id
+                   ), 0)
+            into v_current_stock
+            from public.inventory_transactions t
+            where t.product_id = v_product_id;
+
+            select v_current_stock
+                   - coalesce((
+                       select sum(case when t.transaction_type = 'In' then t.quantity else -t.quantity end)
+                       from public.inventory_transactions t
+                       where t.product_id = v_product_id and t.user_id = v_user_id
+                   ), 0)
+                   + coalesce((
+                       select sum(s.quantity)
+                       from public.sales s
+                       where s.product_id = v_product_id
+                         and (s.user_id = v_user_id
+                              or s.order_id in (select order_id from public.customer_orders where customer_id = v_user_id))
+                   ), 0)
+            into v_after_stock;
+            if v_after_stock < 0 then
+                raise exception 'Account records cannot be deleted because removing its inventory history would make stock negative';
+            end if;
+        end loop;
+
+        delete from public.sales
+        where user_id = v_user_id
+           or order_id in (select order_id from public.customer_orders where customer_id = v_user_id);
+        delete from public.inventory_transactions where user_id = v_user_id;
+        update public.customer_orders set reviewed_by = null where reviewed_by = v_user_id;
+        delete from public.customer_orders where customer_id = v_user_id;
+        delete from auth.users where id = v_user_id;
+        get diagnostics v_rows = row_count;
+        if v_rows = 0 then raise exception 'Account could not be permanently deleted'; end if;
+        return;
+    end if;
+
+    if p_record_type = 'inventory' then
+        if p_action = 'archive' then
+            update public.inventory_transactions set archived_at = now()
+            where transaction_id = p_record_id::bigint and archived_at is null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Active inventory record not found'; end if;
+        elsif p_action = 'restore' then
+            update public.inventory_transactions set archived_at = null
+            where transaction_id = p_record_id::bigint and archived_at is not null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Archived inventory record not found'; end if;
+        else
+            select product_id, quantity, transaction_type
+            into v_product_id, v_old_quantity, v_transaction_type
+            from public.inventory_transactions
+            where transaction_id = p_record_id::bigint and archived_at is not null
+            for update;
+            if not found then raise exception 'Archived inventory record not found'; end if;
+            perform 1 from public.products where product_id = v_product_id for update;
+            select coalesce(sum(case when transaction_type = 'In' then quantity else -quantity end), 0)
+                   - coalesce((select sum(quantity) from public.sales where product_id = v_product_id), 0)
+                   - case when v_transaction_type = 'In' then v_old_quantity else -v_old_quantity end
+            into v_after_stock
+            from public.inventory_transactions where product_id = v_product_id;
+            if v_after_stock < 0 then
+                raise exception 'Inventory record cannot be deleted because it would make stock negative';
+            end if;
+            delete from public.inventory_transactions where transaction_id = p_record_id::bigint;
+        end if;
+        return;
+    elsif p_record_type = 'sale' then
+        if p_action = 'archive' then
+            update public.sales set archived_at = now()
+            where sale_id = p_record_id::bigint and archived_at is null
+            returning order_id into v_order_id;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Active sale record not found'; end if;
+            if v_order_id is not null then
+                update public.customer_orders set archived_at = coalesce(archived_at, now())
+                where order_id = v_order_id;
+            end if;
+        elsif p_action = 'restore' then
+            update public.sales set archived_at = null
+            where sale_id = p_record_id::bigint and archived_at is not null
+            returning order_id into v_order_id;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Archived sale record not found'; end if;
+            if v_order_id is not null then
+                update public.customer_orders set archived_at = null where order_id = v_order_id;
+            end if;
+        else
+            select order_id into v_order_id from public.sales
+            where sale_id = p_record_id::bigint and archived_at is not null
+            for update;
+            if not found then raise exception 'Archived sale record not found'; end if;
+            delete from public.sales where sale_id = p_record_id::bigint;
+            if v_order_id is not null then
+                delete from public.customer_orders where order_id = v_order_id;
+            end if;
+        end if;
+        return;
+    elsif p_record_type = 'order' then
+        if p_action = 'archive' then
+            update public.customer_orders set archived_at = now()
+            where order_id = p_record_id::bigint and archived_at is null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Active customer order not found'; end if;
+            update public.sales set archived_at = coalesce(archived_at, now())
+            where order_id = p_record_id::bigint;
+        elsif p_action = 'restore' then
+            update public.customer_orders set archived_at = null
+            where order_id = p_record_id::bigint and archived_at is not null;
+            get diagnostics v_rows = row_count;
+            if v_rows = 0 then raise exception 'Archived customer order not found'; end if;
+            update public.sales set archived_at = null where order_id = p_record_id::bigint;
+        else
+            perform 1 from public.customer_orders
+            where order_id = p_record_id::bigint and archived_at is not null
+            for update;
+            if not found then raise exception 'Archived customer order not found'; end if;
+            delete from public.sales where order_id = p_record_id::bigint;
+            delete from public.customer_orders where order_id = p_record_id::bigint;
+        end if;
+        return;
+    end if;
+
+    raise exception 'Unsupported archive record type';
+end;
+$$;
+
 revoke all on function public.place_customer_order(bigint, integer, text, text) from public;
 revoke all on function public.product_stock_summary() from public;
 revoke all on function public.record_inventory_transaction(bigint, text, integer, text, date) from public;
 revoke all on function public.record_sale(bigint, integer, text, text) from public;
 revoke all on function public.review_customer_order(bigint, boolean) from public;
 revoke all on function public.admin_modify_record(text, bigint, integer, boolean) from public;
+revoke all on function public.admin_list_archive() from public;
+revoke all on function public.admin_manage_archived_record(text, text, text) from public;
 grant execute on function public.place_customer_order(bigint, integer, text, text) to authenticated;
 grant execute on function public.product_stock_summary() to authenticated;
 grant execute on function public.record_inventory_transaction(bigint, text, integer, text, date) to authenticated;
 grant execute on function public.record_sale(bigint, integer, text, text) to authenticated;
 grant execute on function public.review_customer_order(bigint, boolean) to authenticated;
 grant execute on function public.admin_modify_record(text, bigint, integer, boolean) to authenticated;
+grant execute on function public.admin_list_archive() to authenticated;
+grant execute on function public.admin_manage_archived_record(text, text, text) to authenticated;
 
 -- Assign elevated access only to trusted users after they register:
 -- update public.profiles set role = 'staff'

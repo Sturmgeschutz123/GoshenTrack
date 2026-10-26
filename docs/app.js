@@ -15,6 +15,7 @@
         sales: [],
         orders: [],
         accounts: [],
+        archive: [],
         tab: location.hash.replace(/^#/, "").split("?")[0] || "dashboard",
         message: null,
         busy: false,
@@ -87,7 +88,7 @@
         }
         const items = [["dashboard", "Dashboard"], ["inventory", "Stock-in / out"], ["sale", "Record sale"], ["orders", "Customer orders"]];
         if (state.profile.role === "admin") {
-            items.push(["reports", "Reports"], ["records", "Edit records"], ["accounts", "Accounts"], ["products", "Products"]);
+            items.push(["reports", "Reports"], ["records", "Edit records"], ["accounts", "Accounts"], ["products", "Products"], ["archive", "Archive"]);
         }
         return items;
     }
@@ -100,7 +101,7 @@
         const pageTitle = activeTab ? activeTab[1] : "Dashboard";
         const icons = {
             dashboard: "▦", inventory: "◫", sale: "₱", orders: "▤",
-            reports: "▥", records: "✎", accounts: "◉", products: "◌",
+            reports: "▥", records: "✎", accounts: "◉", products: "◌", archive: "▣",
         };
         const initials = displayName().split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase();
         root.innerHTML = `<div class="app-layout">
@@ -118,7 +119,10 @@
             <div class="workspace">
                 <header class="topbar">
                     <div><p class="eyebrow">GOSHENTRACK <span aria-hidden="true">/</span> WORKSPACE</p><h1>${escapeHtml(pageTitle)}</h1></div>
-                    <span class="topbar-user"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span>${escapeHtml(displayName())}</span></span>
+                    <div class="topbar-actions">
+                        ${state.profile.role === "admin" && state.tab !== "archive" ? '<button type="button" class="archive-shortcut" data-tab="archive"><span aria-hidden="true">▣</span> Archive</button>' : ""}
+                        <span class="topbar-user"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span>${escapeHtml(displayName())}</span></span>
+                    </div>
                 </header>
                 <main>${message}<div class="page-content ${escapeHtml(state.tab)}">${content}</div></main>
             </div>
@@ -143,7 +147,7 @@
             <button class="primary" type="submit" ${state.busy || !activeProducts.length ? "disabled" : ""}>Place order</button>
             <p class="footer-note">Orders stay Pending until staff reviews them. Order history is private to your account.</p>
         </form>`;
-        const recent = state.orders.slice(0, 5).map(order => [
+        const recent = state.orders.filter(order => !order.archived_at).slice(0, 5).map(order => [
             `#${Number(order.order_id)}`, productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
         ]);
@@ -153,7 +157,7 @@
     }
 
     function customerOrders() {
-        return card("My orders", table(["Order", "Product", "Quantity", "Status", "Placed", "Reviewed"], state.orders.map(order => [
+        return card("My orders", table(["Order", "Product", "Quantity", "Status", "Placed", "Reviewed"], state.orders.filter(order => !order.archived_at).map(order => [
             `#${Number(order.order_id)}`, productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
             order.reviewed_at ? escapeHtml(new Date(order.reviewed_at).toLocaleString()) : "—",
@@ -165,7 +169,7 @@
             new URLSearchParams(location.hash.split("?")[1] || "").get("period") : "7";
         const start = period === "all" ? "0000-01-01" : new Date(Date.now() - (Number(period) - 1) * 86400000).toISOString().slice(0, 10);
         const sales = state.sales.filter(item => item.sale_date >= start && item.sale_date <= today());
-        const pending = state.orders.filter(item => item.status === "Pending").length;
+        const pending = state.orders.filter(item => !item.archived_at && item.status === "Pending").length;
         const lowStock = state.products.filter(item => item.active).map(item => {
             const stockCount = Number(state.stock[String(item.product_id)] || 0);
             return `<div class="stat${stockCount < 50 ? " low" : ""}">${productName(item.product_id)}<b>${stockCount}</b></div>`;
@@ -177,7 +181,7 @@
             <div class="stat${pending ? " low" : ""}">Pending orders<b>${pending}</b></div>
         </div>`;
         const periodSelect = `<label class="field">Period<select data-period>${[["1", "Today"], ["7", "Last 7 days"], ["30", "Last 30 days"], ["all", "All time"]].map(([value, label]) => `<option value="${value}" ${period === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>`;
-        const orders = state.orders.slice(0, 8).map(order => [
+        const orders = state.orders.filter(order => !order.archived_at).slice(0, 8).map(order => [
             `#${Number(order.order_id)}`, escapeHtml(order.customer_name), productName(order.product_id),
             Number(order.quantity), status(order.status), order.status === "Pending" ? orderAction(order.order_id, "confirm") + orderAction(order.order_id, "decline") : "",
         ]);
@@ -191,6 +195,26 @@
         return `<form class="inline" data-action="review-order">${hidden("order_id", id)}${hidden("decision", decision)}<button type="submit" ${state.busy ? "disabled" : ""}>${label}</button></form>`;
     }
 
+    function archiveAction(type, id, summary) {
+        if (state.profile.role !== "admin") return "";
+        return `<form class="inline" data-action="archive-record">${hidden("kind", type)}${hidden("id", id)}${hidden("summary", summary)}<button type="submit" ${state.busy ? "disabled" : ""}>Archive</button></form>`;
+    }
+
+    function archivePage() {
+        const labels = { inventory: "Inventory", sale: "Sale", order: "Customer order", account: "Account" };
+        const rows = state.archive.map(item => [
+            escapeHtml(labels[item.record_type] || item.record_type),
+            escapeHtml(item.summary),
+            escapeHtml(new Date(item.archived_at).toLocaleString()),
+            `<div class="inline">
+                <form class="inline" data-action="restore-record">${hidden("kind", item.record_type)}${hidden("id", item.record_id)}<button type="submit" ${state.busy ? "disabled" : ""}>Restore</button></form>
+                <form class="inline" data-action="purge-record">${hidden("kind", item.record_type)}${hidden("id", item.record_id)}${hidden("summary", item.summary)}<button class="danger" type="submit" ${state.busy ? "disabled" : ""}>Permanently delete</button></form>
+            </div>`,
+        ]);
+        return card("Archived records", '<p class="footer-note">Archived items remain included in stock and report totals until permanently deleted. Deleting an order also deletes its linked sale. Deleting an account permanently removes its orders, sales, and inventory transactions; stock totals are checked before removal.</p>'
+            + table(["Type", "Record", "Archived", "Actions"], rows));
+    }
+
     function inventoryPage() {
         const products = state.products.map(item => `<option value="${Number(item.product_id)}">${productName(item.product_id)} · ${Number(state.stock[String(item.product_id)] || 0)} in stock</option>`).join("");
         const form = `<form class="stack" data-action="inventory"><div class="fields">
@@ -200,11 +224,13 @@
             ${field("Reason", '<input name="reason" maxlength="240" placeholder="e.g. stock received or damaged" required>')}
             ${field("Date", `<input type="date" name="transaction_date" value="${today()}" required>`)}
         </div><button class="primary" type="submit" ${state.busy ? "disabled" : ""}>Save transaction</button></form>`;
-        const rows = state.transactions.slice(0, 30).map(item => [
+        const activeTransactions = state.transactions.filter(item => !item.archived_at);
+        const rows = activeTransactions.slice(0, 30).map(item => [
             escapeHtml(item.transaction_date), productName(item.product_id), escapeHtml(item.transaction_type),
             Number(item.quantity), escapeHtml(item.reason),
+            ...(state.profile.role === "admin" ? [archiveAction("inventory", item.transaction_id, `${item.transaction_type} · ${item.quantity} eggs · ${item.reason}`)] : []),
         ]);
-        return card("Record stock-in, stock-out, or adjustment", form) + card("Recent inventory transactions", table(["Date", "Product", "Type", "Quantity", "Reason"], rows));
+        return card("Record stock-in, stock-out, or adjustment", form) + card("Recent inventory transactions", table(["Date", "Product", "Type", "Quantity", "Reason", ...(state.profile.role === "admin" ? ["Archive"] : [])], rows));
     }
 
     function salesPage() {
@@ -215,21 +241,23 @@
             ${field("Customer name", '<input name="customer_name" maxlength="120" required>')}
             ${field("Contact number", '<input name="contact_number" maxlength="40">')}
         </div><button class="primary" type="submit" ${state.busy || !products ? "disabled" : ""}>Save sale</button></form>`;
-        const rows = state.sales.slice(0, 30).map(item => [
+        const rows = state.sales.filter(item => !item.archived_at).slice(0, 30).map(item => [
             escapeHtml(item.sale_date), productName(item.product_id), Number(item.quantity),
             escapeHtml(item.customer_name), money(item.total_amount),
+            ...(state.profile.role === "admin" ? [archiveAction("sale", item.sale_id, `${item.customer_name} · ${item.quantity} eggs · ${money(item.total_amount)}`)] : []),
         ]);
-        return card("Record sale", form) + card("Recent sales", table(["Date", "Product", "Quantity", "Customer", "Total"], rows));
+        return card("Record sale", form) + card("Recent sales", table(["Date", "Product", "Quantity", "Customer", "Total", ...(state.profile.role === "admin" ? ["Archive"] : [])], rows));
     }
 
     function staffOrders() {
-        const rows = state.orders.map(order => [
+        const rows = state.orders.filter(order => !order.archived_at).map(order => [
             `#${Number(order.order_id)}`, `${escapeHtml(order.customer_name)} · ${escapeHtml(order.contact_number)}`,
             productName(order.product_id), Number(order.quantity), status(order.status),
             escapeHtml(new Date(order.order_date).toLocaleString()),
             order.status === "Pending" ? orderAction(order.order_id, "confirm") + orderAction(order.order_id, "decline") : "",
+            ...(state.profile.role === "admin" ? [archiveAction("order", order.order_id, `${order.customer_name} · ${order.quantity} eggs · ${order.status}`)] : []),
         ]);
-        return card("Customer orders", table(["Order", "Customer · Contact", "Product", "Quantity", "Status", "Placed", "Review"], rows));
+        return card("Customer orders", table(["Order", "Customer · Contact", "Product", "Quantity", "Status", "Placed", "Review", ...(state.profile.role === "admin" ? ["Archive"] : [])], rows));
     }
 
     function reports() {
@@ -260,26 +288,27 @@
     }
 
     function records() {
-        const transactions = state.transactions.map(item => {
-            const form = `<form class="inline" data-action="edit-record">${hidden("kind", "inventory")}${hidden("id", item.transaction_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form><form class="inline" data-action="delete-record">${hidden("kind", "inventory")}${hidden("id", item.transaction_id)}<button class="danger" type="submit">Delete</button></form>`;
+        const transactions = state.transactions.filter(item => !item.archived_at).map(item => {
+            const form = `<form class="inline" data-action="edit-record">${hidden("kind", "inventory")}${hidden("id", item.transaction_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form>${archiveAction("inventory", item.transaction_id, `${item.transaction_type} · ${item.quantity} eggs · ${item.reason}`)}`;
             return [escapeHtml(item.transaction_date), productName(item.product_id), escapeHtml(item.transaction_type), Number(item.quantity), escapeHtml(item.reason), form];
         });
-        const sales = state.sales.map(item => {
+        const sales = state.sales.filter(item => !item.archived_at).map(item => {
             const controls = item.order_id
                 ? '<span class="muted">Order-linked</span>'
-                : `<form class="inline" data-action="edit-record">${hidden("kind", "sale")}${hidden("id", item.sale_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form><form class="inline" data-action="delete-record">${hidden("kind", "sale")}${hidden("id", item.sale_id)}<button class="danger" type="submit">Delete</button></form>`;
-            return [escapeHtml(item.sale_date), productName(item.product_id), Number(item.quantity), escapeHtml(item.customer_name), money(item.total_amount), controls];
+                : `<form class="inline" data-action="edit-record">${hidden("kind", "sale")}${hidden("id", item.sale_id)}<input aria-label="New quantity" name="quantity" type="number" min="1" value="${Number(item.quantity)}" required><button type="submit">Save qty</button></form>`;
+            const actions = item.order_id ? archiveAction("order", item.order_id, `${item.customer_name} · ${item.quantity} eggs · Confirmed`) : archiveAction("sale", item.sale_id, `${item.customer_name} · ${item.quantity} eggs · ${money(item.total_amount)}`);
+            return [escapeHtml(item.sale_date), productName(item.product_id), Number(item.quantity), escapeHtml(item.customer_name), money(item.total_amount), `<div class="inline">${controls}${actions}</div>`];
         });
         return card("Inventory records", table(["Date", "Product", "Type", "Quantity", "Reason", "Admin actions"], transactions))
             + card("Sales records", table(["Date", "Product", "Quantity", "Customer", "Total", "Admin actions"], sales));
     }
 
     function accounts() {
-        const rows = state.accounts.map(account => {
+        const rows = state.accounts.filter(account => !account.archived_at).map(account => {
             const roles = ["customer", "staff", "admin"].map(role => `<option value="${role}" ${account.role === role ? "selected" : ""}>${role[0].toUpperCase() + role.slice(1)}</option>`).join("");
             const statuses = ["Active", "Inactive"].map(value => `<option value="${value}" ${account.account_status === value ? "selected" : ""}>${value}</option>`).join("");
             const self = account.id === state.session.user.id;
-            const controls = `<form class="inline" data-action="update-account">${hidden("id", account.id)}<select name="role" aria-label="Account role" ${self ? "disabled" : ""}>${roles}</select><select name="account_status" aria-label="Account status" ${self ? "disabled" : ""}>${statuses}</select><button type="submit" ${self || state.busy ? "disabled" : ""}>Save</button></form>`;
+            const controls = `<form class="inline" data-action="update-account">${hidden("id", account.id)}<select name="role" aria-label="Account role" ${self ? "disabled" : ""}>${roles}</select><select name="account_status" aria-label="Account status" ${self ? "disabled" : ""}>${statuses}</select><button type="submit" ${self || state.busy ? "disabled" : ""}>Save</button></form>${archiveAction("account", account.id, `${account.full_name || "Unnamed account"} · ${account.email}`)}`;
             return [escapeHtml(account.full_name), escapeHtml(account.email), escapeHtml(account.role), status(account.account_status), controls];
         });
         return card("Accounts", '<p class="footer-note">Users sign up as customers. Assign staff/admin roles here. Role and account status are also enforced by Supabase policies.</p>' + table(["Name", "Email", "Role", "Status", "Update access"], rows));
@@ -321,6 +350,7 @@
                 records,
                 accounts,
                 products: productsPage,
+                archive: archivePage,
             };
             content = (views[state.tab] || dashboard)();
         }
@@ -339,19 +369,26 @@
 
         const [orders, transactions, sales, accounts] = await Promise.all([
             role === "customer"
-                ? fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at", "order_date", false, [["customer_id", state.session.user.id]])
-                : fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at", "order_date", false),
+                ? fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at,archived_at", "order_date", false, [["customer_id", state.session.user.id]])
+                : fetchAll("customer_orders", "order_id,product_id,customer_name,contact_number,quantity,status,order_date,reviewed_at,archived_at", "order_date", false),
             role === "customer" ? Promise.resolve([])
-                : fetchAll("inventory_transactions", "transaction_id,product_id,user_id,transaction_type,quantity,reason,transaction_date", "transaction_id"),
+                : fetchAll("inventory_transactions", "transaction_id,product_id,user_id,transaction_type,quantity,reason,transaction_date,archived_at", "transaction_id"),
             role === "customer" ? Promise.resolve([])
-                : fetchAll("sales", "sale_id,product_id,user_id,order_id,customer_name,customer_contact,quantity,unit_price,total_amount,sale_date", "sale_id"),
-            role === "admin" ? fetchAll("profiles", "id,email,full_name,role,account_status,created_at", "created_at", false)
+                : fetchAll("sales", "sale_id,product_id,user_id,order_id,customer_name,customer_contact,quantity,unit_price,total_amount,sale_date,archived_at", "sale_id"),
+            role === "admin" ? fetchAll("profiles", "id,email,full_name,role,account_status,created_at,archived_at", "created_at", false)
                 : Promise.resolve([]),
         ]);
         state.orders = orders;
         state.transactions = transactions;
         state.sales = sales;
         state.accounts = accounts;
+        if (role === "admin") {
+            const { data, error } = await state.client.rpc("admin_list_archive");
+            if (error) throw error;
+            state.archive = data || [];
+        } else {
+            state.archive = [];
+        }
     }
 
     async function fetchAll(tableName, columns, orderColumn, ascending = true, filters = []) {
@@ -487,20 +524,39 @@
                 await afterMutation(`Order ${values.decision === "confirm" ? "confirmed" : "declined"}.`);
                 return;
             }
-            if (action === "edit-record" || action === "delete-record") {
-                if (action === "delete-record" && !confirm("Delete this record?")) {
-                    state.busy = false;
-                    render();
-                    return;
+            if (action === "archive-record" || action === "restore-record" || action === "purge-record") {
+                if (state.profile.role !== "admin") throw new Error("Admin access is required.");
+                if (action === "purge-record") {
+                    let impact = "This permanently removes the archived record and cannot be undone.";
+                    if (values.kind === "order") impact += " Any linked sale will also be permanently deleted.";
+                    if (values.kind === "sale") impact += " Its linked customer order, if any, will also be permanently deleted.";
+                    if (values.kind === "account") impact += " The account and its customer orders, sales, and inventory transactions will also be permanently deleted.";
+                    if (!confirm(`${impact}\n\n${values.summary}`) || prompt('Type DELETE to confirm permanent removal.') !== "DELETE") {
+                        state.busy = false;
+                        render();
+                        return;
+                    }
                 }
+                const recordAction = action === "archive-record" ? "archive" : action === "restore-record" ? "restore" : "delete";
+                await rpc("admin_manage_archived_record", {
+                    p_record_type: values.kind,
+                    p_record_id: values.id,
+                    p_action: recordAction,
+                });
+                await afterMutation(recordAction === "archive" ? "Record moved to the archive."
+                    : recordAction === "restore" ? "Record restored."
+                        : "Archived record permanently deleted.");
+                return;
+            }
+            if (action === "edit-record") {
                 await rpc("admin_modify_record", {
                     p_kind: values.kind,
                     p_id: Number(values.id),
-                    p_new_quantity: action === "delete-record" ? null : Number(values.quantity),
-                    p_delete: action === "delete-record",
+                    p_new_quantity: Number(values.quantity),
+                    p_delete: false,
                 });
                 state.tab = "records";
-                await afterMutation(action === "delete-record" ? "Record deleted." : "Record quantity updated.");
+                await afterMutation("Record quantity updated.");
                 return;
             }
             if (action === "update-account") {

@@ -16,8 +16,10 @@ GoshenTrack is a static web app hosted from `docs/` and backed by Supabase.
 ## Configure Supabase
 
 1. Open the Supabase project used by `docs/app.js`.
-2. Run `supabase_setup.sql` in the Supabase SQL Editor to create the app's
-   tables, policies, and functions.
+2. Run `supabase_setup.sql` in the Supabase SQL Editor to create or update the
+   app's tables, policies, and functions. Rerunning this setup applies later
+   schema updates, including the archive feature, without resetting existing
+   records.
 3. In **Authentication → URL Configuration**, set **Site URL** to the published
    GitHub Pages URL, including the repository path and trailing slash.
 4. Add that same URL under **Redirect URLs**. The app uses the current page URL
@@ -36,3 +38,12 @@ The Supabase URL and publishable key in `docs/app.js` are intended for browser
 use. Never put a Supabase `service_role` key in this repository or frontend.
 Keep the database protected by the row-level security policies in
 `supabase_setup.sql`.
+
+## Archive and permanent deletion
+
+Admins can archive sales, inventory transactions, customer orders, and accounts
+from their pages. Archived records stay included in stock and report totals.
+Use the Archive page to restore records or permanently delete them. Permanent
+deletion requires typing `DELETE`; deleting an order or account also removes
+its linked records. Account deletion is blocked if removing its inventory
+history would make stock negative.

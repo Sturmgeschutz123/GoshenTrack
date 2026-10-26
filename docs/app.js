@@ -96,16 +96,33 @@
         const message = state.message
             ? `<div class="notice${state.message.isError ? " error" : ""}" role="status">${escapeHtml(state.message.message)}</div>`
             : "";
-        root.innerHTML = `<header class="app-header">
-            <h1 class="brand">GoshenTrack</h1>
-            <div class="toolbar"><span class="user-info">${escapeHtml(displayName())} · ${escapeHtml(state.profile.role)}</span>
-                <form data-action="logout" class="logout-form"><button type="submit" ${state.busy ? "disabled" : ""}>Log out</button></form>
+        const activeTab = tabs().find(([key]) => key === state.tab);
+        const pageTitle = activeTab ? activeTab[1] : "Dashboard";
+        const icons = {
+            dashboard: "▦", inventory: "◫", sale: "₱", orders: "▤",
+            reports: "▥", records: "✎", accounts: "◉", products: "◌",
+        };
+        const initials = displayName().split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase();
+        root.innerHTML = `<div class="app-layout">
+            <aside class="sidebar">
+                <a class="brand" href="#dashboard" aria-label="GoshenTrack dashboard">
+                    <span class="brand-mark" aria-hidden="true">G</span>
+                    <span class="brand-copy"><strong>GoshenTrack</strong><small>Inventory &amp; sales</small></span>
+                </a>
+                <nav class="nav" aria-label="Main navigation">${tabs().map(([key, label]) => `<button type="button" data-tab="${key}" class="${state.tab === key ? "selected" : ""}"${state.tab === key ? ' aria-current="page"' : ""}><span class="nav-icon" aria-hidden="true">${icons[key]}</span><span>${label}</span></button>`).join("")}</nav>
+                <div class="sidebar-footer">
+                    <div class="account-chip"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span class="account-copy"><strong>${escapeHtml(displayName())}</strong><small>${escapeHtml(state.profile.role)}</small></span></div>
+                    <form data-action="logout" class="logout-form"><button class="logout-button" type="submit" ${state.busy ? "disabled" : ""}><span aria-hidden="true">↪</span> Log out</button></form>
+                </div>
+            </aside>
+            <div class="workspace">
+                <header class="topbar">
+                    <div><p class="eyebrow">GOSHENTRACK <span aria-hidden="true">/</span> WORKSPACE</p><h1>${escapeHtml(pageTitle)}</h1></div>
+                    <span class="topbar-user"><span class="avatar" aria-hidden="true">${escapeHtml(initials)}</span><span>${escapeHtml(displayName())}</span></span>
+                </header>
+                <main>${message}<div class="page-content ${escapeHtml(state.tab)}">${content}</div></main>
             </div>
-        </header>
-        <main>
-            <nav class="nav" aria-label="Main navigation">${tabs().map(([key, label]) => `<button type="button" data-tab="${key}" class="${state.tab === key ? "selected" : ""}">${label}</button>`).join("")}</nav>
-            ${message}${content}
-        </main>`;
+        </div>`;
         state.message = null;
     }
 
